@@ -1,0 +1,32 @@
+name: Publish verified debug APK (one time)
+
+on:
+  push:
+    branches:
+      - arena/292fb282-netfixmobile
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.event.head_commit.message == 'Publish verified video-fix debug APK'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Publish the already-tested APK as a prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=/tmp/NetFix-Mobile-video-fix-debug.apk
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/$GH_REPO/git/blobs/f368b6fbdf96bdd30ae13915d9c8616021aaf65f" > "$apk"
+          echo '2b3b7f5443f8d6dda1397b1722db9ce4b8f537f7037ada527b63b816c3fa8647  '"$apk" | sha256sum --check
+          gh release create debug-video-fix-e2ef81d "$apk" \
+            --target e2ef81d9b49536450a19e47cad8133cbd525254e \
+            --prerelease \
+            --title 'NetFix Mobile — тестовая debug-сборка для YouTube' \
+            --notes 'Тестовая сборка устанавливается отдельно от официального приложения. Пройдены unit-тесты и smoke-тесты на Android-эмуляторе; воспроизведение YouTube в конкретной сети не проверено.'
