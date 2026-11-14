@@ -9,18 +9,46 @@ permissions:
 
 jobs:
   inspect-upstream:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - name: Retrieve published baseline
+      - name: Recover published components absent from source
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
         run: |
+          set -eu
           curl -fLsS 'https://github.com/rupleide/NetFixMobile/releases/download/v1.0.5/NetFix-Mobile-v1.0.5-release.apk' -o /tmp/upstream.apk
+          echo '181836904b55cd27184cf279ef19b2e36523df87081888dc76e4425b5a54659f  /tmp/upstream.apk' | sha256sum -c -
+          curl -fLsS 'https://github.com/pxb1988/dex2jar/releases/download/v2.4/dex-tools-v2.4.zip' -o /tmp/dex-tools.zip
+          unzip -q /tmp/dex-tools.zip -d /tmp/dex-tools
+          unzip -q /tmp/upstream.apk classes2.dex -d /tmp
+          tool=$(find /tmp/dex-tools -name d2j-dex2jar.sh -print -quit)
+          chmod +x "$(dirname "$tool")"/*.sh
+          "$tool" /tmp/classes2.dex -f -o /tmp/all.jar
+          mkdir -p /tmp/recovered/libs /tmp/recovered/jniLibs
+          python3 - <<'PY'
+          from zipfile import ZipFile, ZIP_DEFLATED
+          prefixes = ('com/rupleide/netfix/core/dpibypass/CloudflareUnfreeze',
+                      'com/rupleide/netfix/core/dpibypass/SecureDnsRelay')
+          with ZipFile('/tmp/all.jar') as src, ZipFile('/tmp/recovered/libs/upstream-helpers.jar', 'w', ZIP_DEFLATED) as dst:
+              names = [name for name in src.namelist() if name.endswith('.class') and name.startswith(prefixes)]
+              assert len(names) >= 10, names
+              for name in names:
+                  dst.writestr(name, src.read(name))
+              print('Recovered classes:', len(names))
+          with ZipFile('/tmp/upstream.apk') as apk:
+              for abi in ('arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64'):
+                  name = f'lib/{abi}/libbyedpi.so'
+                  out = f'/tmp/recovered/jniLibs/{abi}/libbyedpi.so'
+                  import os
+                  os.makedirs(os.path.dirname(out), exist_ok=True)
+                  with open(out, 'wb') as f: f.write(apk.read(name))
+          PY
+          tar -czf /tmp/recovered.tar.gz -C /tmp/recovered .
           python3 - <<'PY'
           import base64, json
-          with open('/tmp/upstream.apk', 'rb') as apk, open('/tmp/blob.json', 'w') as out:
-              json.dump({'content': base64.b64encode(apk.read()).decode('ascii'), 'encoding': 'base64'}, out)
+          with open('/tmp/recovered.tar.gz', 'rb') as src, open('/tmp/blob.json', 'w') as out:
+              json.dump({'content': base64.b64encode(src.read()).decode('ascii'), 'encoding': 'base64'}, out)
           PY
           sha=$(gh api -X POST "repos/$REPOSITORY/git/blobs" --input /tmp/blob.json --jq '.sha')
-          echo "::notice title=Baseline APK blob::$sha"
+          echo "::notice title=Recovered components blob::$sha"
