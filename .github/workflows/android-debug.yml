@@ -23,6 +23,20 @@ jobs:
           set -o pipefail
           chmod +x gradlew
           ./gradlew --no-daemon --max-workers=2 testDebugUnitTest assembleDebug 2>&1 | tee /tmp/netfix-gradle.log
+      - name: Enable hardware acceleration for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Verify native video transport on Android
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: bash -o pipefail -c './gradlew --no-daemon --max-workers=2 connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.rupleide.netfix.core.dpibypass.VideoTransportSmokeTest 2>&1 | tee /tmp/netfix-instrumented.log'
       - name: Upload build and test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -31,7 +45,9 @@ jobs:
           path: |
             app/build/outputs/apk/debug/*.apk
             app/build/test-results/testDebugUnitTest/*.xml
+            app/build/outputs/androidTest-results/connected/**/*.xml
             /tmp/netfix-gradle.log
+            /tmp/netfix-instrumented.log
           if-no-files-found: ignore
           retention-days: 7
       - name: Export build results for the workspace
@@ -55,5 +71,10 @@ jobs:
             echo "::notice title=$title::$sha"
           }
           export_blob /tmp/netfix-gradle.log 'Gradle log blob'
+          export_blob /tmp/netfix-instrumented.log 'Android test log blob'
+          if [[ -d app/build/test-results/testDebugUnitTest ]]; then
+            tar -czf /tmp/netfix-unit-results.tar.gz -C app/build/test-results/testDebugUnitTest .
+            export_blob /tmp/netfix-unit-results.tar.gz 'Unit test results blob'
+          fi
           apk=$(find app/build/outputs/apk/debug -name '*.apk' -print -quit 2>/dev/null || true)
           [[ -z "$apk" ]] || export_blob "$apk" 'Debug APK blob'
