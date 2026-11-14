@@ -1,8 +1,11 @@
 package com.rupleide.netfix.core.dpibypass
 
 import android.os.SystemClock
+import androidx.lifecycle.Lifecycle
+import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.rupleide.netfix.MainActivity
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -83,6 +86,15 @@ class VideoTransportSmokeTest {
             proxyThread.join(5_000)
         }
         assertFalse("Native proxy failed to stop", proxyThread.isAlive)
+    }
+
+    @Test
+    fun appLaunchesAndTunnelLibraryLoads() {
+        Class.forName(TProxyService::class.java.name)
+        ActivityScenario.launch(MainActivity::class.java).use { activity ->
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+            assertEquals(Lifecycle.State.RESUMED, activity.state)
+        }
     }
 
     @Test

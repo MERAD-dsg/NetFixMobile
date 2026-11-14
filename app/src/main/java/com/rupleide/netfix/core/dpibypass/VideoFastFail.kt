@@ -29,9 +29,15 @@ object VideoFastFail {
 
     private fun isMobileNetwork(context: Context): Boolean = runCatching {
         val manager = context.getSystemService(ConnectivityManager::class.java)
-        manager.allNetworks
-            .mapNotNull { manager.getNetworkCapabilities(it) }
-            .filter { !it.hasTransport(NetworkCapabilities.TRANSPORT_VPN) && it.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) }
-            .none { it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || it.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) }
+        // Strategy scans can bind the process to mobile while Wi-Fi is still
+        // connected. Prefer that explicit binding, then the active network.
+        val network = manager.boundNetworkForProcess ?: manager.activeNetwork
+        val caps = manager.getNetworkCapabilities(network)
+        when {
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true ||
+                caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true -> false
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> true
+            else -> context.currentNetworkKind() != NetworkKind.Wifi
+        }
     }.getOrDefault(true)
 }
