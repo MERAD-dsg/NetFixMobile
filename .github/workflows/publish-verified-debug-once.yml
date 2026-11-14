@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   publish:
-    if: github.event.head_commit.message == 'Publish verified video-fix debug APK'
+    if: startsWith(github.event.head_commit.message, 'Publish verified video-fix debug APK')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
