@@ -20,6 +20,7 @@ jobs:
           curl -fLsS 'https://github.com/rupleide/NetFixMobile/releases/download/v1.0.5/NetFix-Mobile-v1.0.5-release.apk' -o /tmp/upstream.apk
           echo '181836904b55cd27184cf279ef19b2e36523df87081888dc76e4425b5a54659f  /tmp/upstream.apk' | sha256sum -c -
           curl -fLsS 'https://github.com/pxb1988/dex2jar/releases/download/v2.4/dex-tools-v2.4.zip' -o /tmp/dex-tools.zip
+          echo "::notice title=dex-tools SHA-256::$(sha256sum /tmp/dex-tools.zip | cut -d ' ' -f 1)"
           unzip -q /tmp/dex-tools.zip -d /tmp/dex-tools
           unzip -q /tmp/upstream.apk classes2.dex -d /tmp
           tool=$(find /tmp/dex-tools -name d2j-dex2jar.sh -print -quit)
