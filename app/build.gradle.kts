@@ -18,6 +18,8 @@ val completeUpstreamSources = listOf(
 ).all { file(it).isFile }
 val usePublishedBaseline = providers.gradleProperty("netfix.usePublishedBaseline")
     .map { it.toBoolean() }.getOrElse(!completeUpstreamSources)
+val sideBySideDebug = providers.gradleProperty("netfix.sideBySideDebug")
+    .map { it.toBoolean() }.getOrElse(false)
 val baselineDir = layout.buildDirectory.dir("upstream-baseline")
 val preparePublishedBaseline by tasks.registering(Exec::class) {
     group = "build setup"
@@ -41,6 +43,7 @@ android {
         targetSdk = 35
         versionCode = 8
         versionName = "1.0.5"
+        manifestPlaceholders["appLabel"] = "@string/app_name"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -54,6 +57,12 @@ android {
     }
 
     buildTypes {
+        getByName("debug") {
+            if (sideBySideDebug) {
+                applicationIdSuffix = ".debug"
+                manifestPlaceholders["appLabel"] = "NetFix Mobile (тест)"
+            }
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(

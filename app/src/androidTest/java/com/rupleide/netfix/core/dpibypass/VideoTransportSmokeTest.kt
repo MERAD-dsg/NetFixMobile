@@ -5,6 +5,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.rupleide.netfix.BuildConfig
 import com.rupleide.netfix.MainActivity
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -90,6 +91,12 @@ class VideoTransportSmokeTest {
 
     @Test
     fun appLaunchesAndTunnelLibraryLoads() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        assertEquals(BuildConfig.APPLICATION_ID, context.packageName)
+        if (BuildConfig.APPLICATION_ID.endsWith(".debug")) {
+            val label = context.packageManager.getApplicationLabel(context.applicationInfo).toString()
+            assertEquals("NetFix Mobile (тест)", label)
+        }
         Class.forName(TProxyService::class.java.name)
         ActivityScenario.launch(MainActivity::class.java).use { activity ->
             InstrumentationRegistry.getInstrumentation().waitForIdleSync()

@@ -135,6 +135,8 @@ git clone https://github.com/rupleide/NetFixMobile.git
 
 > В опубликованном дереве исходников v1.0.5 отсутствуют `CloudflareUnfreeze.kt`, `SecureDnsRelay.kt` и три патча ByeDPI; закреплённый commit подмодуля `hev-socks5-tunnel` также недоступен в его upstream-репозитории. Поэтому сборка автоматически извлекает **только эти отсутствующие компоненты** из опубликованного APK v1.0.5, проверяя SHA-256 APK и инструмента dex2jar. Результат сохраняется в `app/build/upstream-baseline`, а остальные исходники, включая исправления видеотрафика, компилируются из текущего дерева. Для этого способа нужны `bash`, `curl`, `unzip`, `python3` и доступ к GitHub. Если исходники и патчи будут восстановлены, нативная сборка снова используется автоматически; её также можно явно выбрать с `-Pnetfix.usePublishedBaseline=false`.
 
+Тестовую сборку для установки рядом с официальной версией можно получить командой `./gradlew -Pnetfix.sideBySideDebug=true assembleDebug`. У неё отдельные настройки и имя пакета `com.rupleide.netfix.debug`.
+
 ---
 
 > [!CAUTION]
