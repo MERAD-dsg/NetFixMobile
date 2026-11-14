@@ -180,7 +180,9 @@ object StrategyTestManager {
         val youtubeTotal: Int,
         val discordOk: Int,
         val discordTotal: Int,
-        val averageMs: Long
+        val averageMs: Long,
+        // null means not tested; false can also mean the player API was unavailable.
+        val videoLoaded: Boolean? = null
     ) {
         val totalOk: Int get() = youtubeOk + discordOk
         val total: Int get() = youtubeTotal + discordTotal
@@ -309,6 +311,7 @@ object StrategyTestManager {
                             .put("yt", item.youtubeOk).put("ytTotal", item.youtubeTotal)
                             .put("dc", item.discordOk).put("dcTotal", item.discordTotal)
                             .put("ms", item.averageMs)
+                            .put("videoLoaded", item.videoLoaded)
                     )
                 }
                 root.put(kind.preferenceSuffix, array)
@@ -336,7 +339,8 @@ object StrategyTestManager {
                         youtubeTotal = obj.getInt("ytTotal"),
                         discordOk = obj.getInt("dc"),
                         discordTotal = obj.getInt("dcTotal"),
-                        averageMs = obj.optLong("ms", -1L)
+                        averageMs = obj.optLong("ms", -1L),
+                        videoLoaded = if (obj.has("videoLoaded") && !obj.isNull("videoLoaded")) obj.optBoolean("videoLoaded") else null
                     )
                 }
                 verifyResults[kind] = list
@@ -353,6 +357,9 @@ object StrategyTestManager {
     private fun verifyCandidates(context: Context): List<String> {
         val prefs = context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE)
         val ordered = LinkedHashSet<String>()
+        // The main scan can prefer a stream-capable strategy even when its
+        // host count is lower. Do not drop it from per-network verification.
+        appliedStrategy?.takeIf { !deletedStrategies.containsKey(it) }?.let { ordered.add(it) }
         testResults
             .filter { StrategyTester.isSuccessfulStatus(it.third) && !deletedStrategies.containsKey(it.second) }
             .sortedByDescending { StrategyTester.successScore(it.third) ?: 0.0 }
@@ -460,21 +467,7 @@ object StrategyTestManager {
     private fun applyUniversalIfPossible(context: Context): Boolean {
         val wifi = verifyResults[NetworkKind.Wifi].orEmpty()
         val mobile = verifyResults[NetworkKind.Mobile].orEmpty()
-        if (wifi.isEmpty() || mobile.isEmpty()) {
-            setUniversal(context, null)
-            return false
-        }
-        val wifiBest = wifi.maxOf { it.totalOk }
-        val mobileBest = mobile.maxOf { it.totalOk }
-        val mobileByKey = mobile.associateBy { StrategyTester.normalizeStrategy(it.strategy) }
-        val universal = wifi
-            .mapNotNull { w -> mobileByKey[StrategyTester.normalizeStrategy(w.strategy)]?.let { w to it } }
-            .filter { (w, m) -> minOf(w.totalOk, m.totalOk) > 0 && w.totalOk >= wifiBest - 1 && m.totalOk >= mobileBest - 1 }
-            .maxWithOrNull(
-                compareBy<Pair<RankedConfig, RankedConfig>> { (w, m) -> minOf(w.totalOk, m.totalOk) }
-                    .thenBy { (w, m) -> w.totalOk + m.totalOk }
-                    .thenBy { (w, m) -> -(maxOf(w.averageMs, m.averageMs)) }
-            )
+        val universal = VerificationRanking.universal(wifi, mobile)
         if (universal == null) {
             setUniversal(context, null)
             return false
@@ -613,8 +606,11 @@ object StrategyTestManager {
                         connectivityManager.bindProcessToNetwork(held.network)
                         candidates.forEachIndexed { index, strategy ->
                             verifyMessage = "${kind.displayName}: проверено $index из ${candidates.size}"
-                            val probe = tester.probeStrategy(strategy)
-                            ranked += RankedConfig(strategy, probe.youtubeOk, probe.youtubeTotal, probe.discordOk, probe.discordTotal, probe.averageMs)
+                            val probe = tester.probeStrategy(
+                                strategy,
+                                checkVideo = CompatibilityManager.streamProbeEnabled(appContext.getPreferences())
+                            )
+                            ranked += RankedConfig(strategy, probe.youtubeOk, probe.youtubeTotal, probe.discordOk, probe.discordTotal, probe.averageMs, probe.videoLoaded)
                             verifyDone += 1
                         }
                     } finally {
@@ -631,10 +627,7 @@ object StrategyTestManager {
                     } else {
                         ranked
                     }
-                    val sorted = merged.sortedWith(
-                        compareByDescending<RankedConfig> { it.totalOk }
-                            .thenBy { if (it.averageMs < 0) Long.MAX_VALUE else it.averageMs }
-                    )
+                    val sorted = VerificationRanking.sorted(merged)
                     verifyResults[kind] = sorted
                     if (only == null && ranked.size == candidates.size) verifiedAt[kind] = System.currentTimeMillis()
                     val best = sorted.firstOrNull()
@@ -1232,6 +1225,7 @@ object StrategyTestManager {
                         .put("yt", item.youtubeOk).put("ytTotal", item.youtubeTotal)
                         .put("dc", item.discordOk).put("dcTotal", item.discordTotal)
                         .put("ms", item.averageMs)
+                        .put("videoLoaded", item.videoLoaded)
                 )
             }
             verify.put(kind.preferenceSuffix, list)
@@ -1325,7 +1319,8 @@ object StrategyTestManager {
                         youtubeTotal = item.optInt("ytTotal"),
                         discordOk = item.optInt("dc"),
                         discordTotal = item.optInt("dcTotal"),
-                        averageMs = item.optLong("ms", -1L)
+                        averageMs = item.optLong("ms", -1L),
+                        videoLoaded = if (item.has("videoLoaded") && !item.isNull("videoLoaded")) item.optBoolean("videoLoaded") else null
                     )
                 }
                 if (list.isNotEmpty()) verifyResults[kind] = list

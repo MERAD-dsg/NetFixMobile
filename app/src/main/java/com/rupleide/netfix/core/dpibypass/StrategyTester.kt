@@ -438,7 +438,8 @@ class StrategyTester(private val context: Context) {
         val youtubeTotal: Int,
         val discordOk: Int,
         val discordTotal: Int,
-        val averageMs: Long
+        val averageMs: Long,
+        val videoLoaded: Boolean? = null
     )
 
     suspend fun stopRunningVpnForTests(): Boolean = withContext(Dispatchers.IO) {
@@ -454,11 +455,14 @@ class StrategyTester(private val context: Context) {
         wasRunning
     }
 
-    suspend fun probeStrategy(strategy: String): StrategyProbeResult = withContext(Dispatchers.IO) {
+    suspend fun probeStrategy(strategy: String, checkVideo: Boolean = false): StrategyProbeResult = withContext(Dispatchers.IO) {
         val discordHosts = discordProbeHostsFor(includeEchHost(), includeDiscordHosts())
         val empty = StrategyProbeResult(0, YOUTUBE_PROBE_HOSTS.size, 0, discordHosts.size, -1L)
         runWithStrategy(strategy, empty) { port ->
             coroutineScope {
+                // Run the chunk probe alongside host checks so per-network
+                // verification does not add a full timeout to every strategy.
+                val video = if (checkVideo) async(Dispatchers.IO) { probeVideoStream(port) } else null
                 val hosts = YOUTUBE_PROBE_HOSTS + discordHosts
                 val times = hosts.map { host -> async(Dispatchers.IO) { timedReachability(host, port) } }.awaitAll()
                 val youtubeTimes = times.take(YOUTUBE_PROBE_HOSTS.size)
@@ -469,7 +473,8 @@ class StrategyTester(private val context: Context) {
                     youtubeTotal = youtubeTimes.size,
                     discordOk = discordTimes.count { it >= 0 },
                     discordTotal = discordTimes.size,
-                    averageMs = if (okTimes.isEmpty()) -1L else okTimes.average().toLong()
+                    averageMs = if (okTimes.isEmpty()) -1L else okTimes.average().toLong(),
+                    videoLoaded = video?.await()?.loaded
                 )
             }
         }
