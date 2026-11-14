@@ -1,9 +1,10 @@
 package com.rupleide.netfix.core.dpibypass
 
-/** Tracks default-network changes without treating the first callback as a change.
+/** Tracks changes of the best physical network; the first callback is a baseline.
  *
- * Do not forget the old network on loss: Android can report loss before the new
- * default becomes available, and that transition still requires a reconnect.
+ * Call this only with non-VPN networks from a best-match/request callback, never
+ * with every available network. Retain the old network on loss so a later
+ * replacement is detected even when Android delivers onLost first.
  */
 internal class DefaultNetworkTracker<T : Any> {
     @Volatile
@@ -13,6 +14,11 @@ internal class DefaultNetworkTracker<T : Any> {
         val previous = current
         current = network
         return previous != null && previous != network
+    }
+
+    fun onCapabilities(network: T, isVpn: Boolean, hasInternet: Boolean): Boolean {
+        if (isVpn || !hasInternet) return false
+        return onAvailable(network)
     }
 
     fun isCurrent(network: T): Boolean = current == network

@@ -6,8 +6,14 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService.SERVICE_INTERFACE
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import com.rupleide.netfix.core.debug.AppDebugManager as Log
 import androidx.lifecycle.lifecycleScope
@@ -48,7 +54,8 @@ class ByeDpiVpnService : LifecycleVpnService() {
         }
     private val mutex = Mutex()
     private var wakeLock = null as android.os.PowerManager.WakeLock?
-    private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var shouldRun = false
     private val isRunning: Boolean
         get() = status == ServiceStatus.Connected
 
@@ -62,6 +69,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
         private const val PAUSE_NOTIFICATION_ID: Int = 3
         private const val CLOUDFLARE_CHECK_DELAY_MS = 3_000L
         private const val CLOUDFLARE_PERIODIC_CHECK_MS = 45L * 60 * 1000
+        private const val NETWORK_SWITCH_SETTLE_MS = 500L
         private const val NOTIFICATION_CHANNEL_ID: String = NETFIX_NOTIFICATION_CHANNEL_ID
         private const val VPN_MTU = 1500
         @Volatile
@@ -89,54 +97,107 @@ class ByeDpiVpnService : LifecycleVpnService() {
             NOTIFICATION_CHANNEL_ID,
             R.string.vpn_channel_name
         )
-        val connectivityManager = getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
-        val callback = object : android.net.ConnectivityManager.NetworkCallback() {
-            private val networks = DefaultNetworkTracker<android.net.Network>()
+    }
 
-            override fun onAvailable(network: android.net.Network) {
-                super.onAvailable(network)
-                if (!networks.onAvailable(network) || !isRunning) return
+    private fun registerPhysicalNetworkMonitor() {
+        if (networkCallback != null) return
+        val connectivity = getSystemService(ConnectivityManager::class.java)
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            private val networks = DefaultNetworkTracker<Network>()
+            private var bestNetwork: Network? = null
+
+            override fun onAvailable(network: Network) {
+                bestNetwork = network
+            }
+
+            override fun onLost(network: Network) {
+                if (bestNetwork == network) bestNetwork = null
+            }
+
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                if (bestNetwork != network) return
+                // A default-network callback can report our own VPN, even when
+                // NetFix itself is excluded from the tunnel. Only consider a
+                // physical network, and wait for its capabilities before using it.
+                if (!networks.onCapabilities(
+                        network,
+                        isVpn = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN),
+                        hasInternet = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    ) || !isRunning || !shouldRun) return
+                val kind = networkKindOf(capabilities)
+                val registration = this
                 lifecycleScope.launch {
+                    // Coalesce short-lived handovers; never restart for an
+                    // obsolete callback or after the user pressed Stop/Pause.
+                    delay(NETWORK_SWITCH_SETTLE_MS)
                     var restarted = false
                     mutex.withLock {
-                        // A later default-network event can supersede a queued restart.
-                        if (!networks.isCurrent(network) || !isRunning) return@withLock
+                        if (networkCallback !== registration || bestNetwork != network || !networks.isCurrent(network) || !isRunning || !shouldRun) return@withLock
                         try {
-                            switchStrategyForCurrentNetwork()
+                            Log.i(TAG, "Physical network changed; reconnecting VPN")
                             stopProxy()
                             stopTun2Socks()
+                            if (networkCallback !== registration || !shouldRun) return@withLock
+                            // If another handover occurred while stopping, restore
+                            // the tunnel rather than leaving a "connected" service
+                            // without one; the newer callback can reconcile again.
+                            val activeKind = if (bestNetwork == network && networks.isCurrent(network)) kind else currentNetworkKind()
+                            switchStrategyForNetwork(activeKind)
                             startProxy()
                             startTun2Socks()
                             restarted = true
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
                         } catch (e: Exception) {
-                            Log.e(TAG, "Watchdog reconnect failed", e)
+                            Log.e(TAG, "Network reconnect failed", e)
+                            shouldRun = false
+                            stopTun2Socks()
+                            stopProxy()
+                            updateStatus(ServiceStatus.Failed)
+                            unregisterPhysicalNetworkMonitor()
+                            stopSelf()
                         }
                     }
-                    if (restarted) checkCloudflareFreeze()
+                    if (restarted && shouldRun) checkCloudflareFreeze()
                 }
             }
         }
-        networkCallback = callback
         try {
-            // The previous request watched *all* Internet networks, including
-            // standby mobile and the VPN itself. Their appearance could repeatedly
-            // tear down long-lived video streams without a real network switch.
-            connectivityManager.registerDefaultNetworkCallback(callback)
+            val handler = Handler(Looper.getMainLooper())
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // Observe only the best physical network, not every standby network.
+                connectivity.registerBestMatchingNetworkCallback(request, callback, handler)
+            } else {
+                // Before API 31 this tracks one best non-VPN match. Release the
+                // request as soon as the VPN is paused or stopped.
+                connectivity.requestNetwork(request, callback, handler)
+            }
+            networkCallback = callback
         } catch (e: Exception) {
-            Log.w(TAG, "Could not watch the default network", e)
+            Log.w(TAG, "Could not watch the physical network", e)
+        }
+    }
+
+    private fun unregisterPhysicalNetworkMonitor() {
+        val callback = networkCallback ?: return
+        networkCallback = null
+        try {
+            getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(callback)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not stop watching the physical network", e)
         }
     }
 
     override fun onDestroy() {
+        shouldRun = false
+        unregisterPhysicalNetworkMonitor()
         super.onDestroy()
         isAlive = false
         com.rupleide.netfix.core.tgproxy.TgProxyController.onOwnVpnStateChanged()
-        networkCallback?.let {
-            val connectivityManager = getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
-            try {
-                connectivityManager.unregisterNetworkCallback(it)
-            } catch (_: Exception) {}
-        }
         tunFd?.close()
         releaseWakeLock()
     }
@@ -148,6 +209,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
 
         return when (val action = intent?.action) {
             START_ACTION -> {
+                shouldRun = true
                 lifecycleScope.launch {
                     start()
                 }
@@ -155,6 +217,8 @@ class ByeDpiVpnService : LifecycleVpnService() {
             }
 
             STOP_ACTION -> {
+                shouldRun = false
+                unregisterPhysicalNetworkMonitor()
                 getSharedPreferences(packageName + "_preferences", android.content.Context.MODE_PRIVATE)
                     .edit()
                     .putBoolean("service_enabled", false)
@@ -166,6 +230,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
             }
 
             RESUME_ACTION -> {
+                shouldRun = true
                 lifecycleScope.launch {
                     if (prepare(this@ByeDpiVpnService) == null) {
                         start()
@@ -175,6 +240,8 @@ class ByeDpiVpnService : LifecycleVpnService() {
             }
 
             PAUSE_ACTION -> {
+                shouldRun = false
+                unregisterPhysicalNetworkMonitor()
                 lifecycleScope.launch {
                     pause()
                 }
@@ -183,6 +250,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
 
             SERVICE_INTERFACE -> {
                 Log.i(TAG, "Started by Android")
+                shouldRun = true
 
                 lifecycleScope.launch {
                     start()
@@ -192,6 +260,8 @@ class ByeDpiVpnService : LifecycleVpnService() {
             }
 
             else -> {
+                shouldRun = false
+                unregisterPhysicalNetworkMonitor()
                 Log.w(TAG, "Unknown action: $action")
                 lifecycleScope.launch {
                     stop()
@@ -202,6 +272,8 @@ class ByeDpiVpnService : LifecycleVpnService() {
     }
 
     override fun onRevoke() {
+        shouldRun = false
+        unregisterPhysicalNetworkMonitor()
         Log.i(TAG, "VPN revoked")
         val tgRunning = com.rupleide.netfix.core.tgproxy.TgProxyController.isRunning
         if (tgRunning) {
@@ -215,15 +287,18 @@ class ByeDpiVpnService : LifecycleVpnService() {
         lifecycleScope.launch { stop() }
     }
 
-    private fun switchStrategyForCurrentNetwork() {
-        if (applyStrategyForCurrentNetwork()) {
-            val kind = currentNetworkKind()
+    private fun switchStrategyForNetwork(kind: NetworkKind?) {
+        if (applyStrategyForNetwork(kind)) {
             Log.i(TAG, "Сеть: ${kind?.displayName}, применяю сохранённую для неё стратегию")
         }
     }
 
+    private fun switchStrategyForCurrentNetwork() = switchStrategyForNetwork(currentNetworkKind())
+
     private suspend fun start() {
+        if (!shouldRun) return
         Log.i(TAG, "Starting")
+        registerPhysicalNetworkMonitor()
 
         val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.cancel(PAUSE_NOTIFICATION_ID)
@@ -243,13 +318,16 @@ class ByeDpiVpnService : LifecycleVpnService() {
                 com.rupleide.netfix.service.WatchdogWorker.schedulePeriodicWork(this)
             }
             mutex.withLock {
+                if (!shouldRun) return@withLock
                 switchStrategyForCurrentNetwork()
                 startProxy()
                 startTun2Socks()
                 updateStatus(ServiceStatus.Connected)
             }
-            checkCloudflareFreeze()
+            if (isRunning && shouldRun) checkCloudflareFreeze()
         } catch (e: Exception) {
+            shouldRun = false
+            unregisterPhysicalNetworkMonitor()
             Log.e(TAG, "Failed to start VPN", e)
             // Startup can fail after the proxy has started but before the VPN is
             // marked connected. Tear down those partial resources first.

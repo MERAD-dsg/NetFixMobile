@@ -255,7 +255,7 @@ enum class NetworkKind(val preferenceSuffix: String, val displayName: String) {
     Mobile("mobile", "Мобильная сеть")
 }
 
-private fun networkKindOf(capabilities: android.net.NetworkCapabilities): NetworkKind? = when {
+internal fun networkKindOf(capabilities: android.net.NetworkCapabilities): NetworkKind? = when {
     capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ||
         capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) -> NetworkKind.Wifi
     capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) -> NetworkKind.Mobile
@@ -297,8 +297,8 @@ fun SharedPreferences.rememberStrategyForNetwork(kind: NetworkKind, strategy: St
     edit().putString(strategyKeyForNetwork(kind), strategy).apply()
 }
 
-fun Context.applyStrategyForCurrentNetwork(): Boolean {
-    val kind = currentNetworkKind() ?: return false
+fun Context.applyStrategyForNetwork(kind: NetworkKind?): Boolean {
+    if (kind == null) return false
     val prefs = getSharedPreferences(packageName + "_preferences", Context.MODE_PRIVATE)
     val networkStrategy = prefs.strategyForNetwork(kind) ?: return false
     if (prefs.getString(ACTIVE_STRATEGY_KEY, null) == networkStrategy) return false
@@ -308,6 +308,8 @@ fun Context.applyStrategyForCurrentNetwork(): Boolean {
         .apply()
     return true
 }
+
+fun Context.applyStrategyForCurrentNetwork(): Boolean = applyStrategyForNetwork(currentNetworkKind())
 
 const val NETFIX_NOTIFICATION_ID: Int = 1
 const val NETFIX_NOTIFICATION_CHANNEL_ID: String = "ByeDPIVpn"
