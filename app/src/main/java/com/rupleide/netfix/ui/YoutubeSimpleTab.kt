@@ -137,7 +137,7 @@ import com.rupleide.netfix.ui.main.rememberAnimationsEnabled
 
 private enum class TabScreen { NoScan, Scanning, Ready }
 
-private data class Verdict(val label: String, val textColor: Color, val dotColor: Color)
+private data class Verdict(val label: String, val textColor: Color, val dotColor: Color, val videoConfirmed: Boolean = false)
 
 private data class VerifyRow(
     val kind: NetworkKind,
@@ -152,9 +152,13 @@ private fun sameStrategy(a: String?, b: String?): Boolean =
 
 private fun verdictOf(result: RankedConfig?): Verdict = when {
     result == null -> Verdict("Не проверен", Nf.TextSub, Nf.Muted)
-    result.isWorking -> Verdict("Работает", Nf.Green, Nf.Green)
-    result.totalOk > 0 -> Verdict("Работает частично", Nf.Yellow, Nf.Yellow)
-    else -> Verdict("Не работает", Nf.RedText, Nf.Red)
+    result.videoLoaded == true -> Verdict("Видео загружено", Nf.Green, Nf.Green, videoConfirmed = true)
+    result.totalOk == 0 -> Verdict("Сайты не открылись", Nf.RedText, Nf.Red)
+    // An unavailable player API can also cause a failed chunk probe; avoid
+    // claiming the actual YouTube app definitely cannot play video.
+    result.videoLoaded == false -> Verdict("Видео не подтверждено", Nf.Yellow, Nf.Yellow)
+    result.isWorking -> Verdict("Сайты доступны", Nf.Green, Nf.Green)
+    else -> Verdict("Часть сайтов доступна", Nf.Yellow, Nf.Yellow)
 }
 
 private fun kindIcon(kind: NetworkKind): ImageVector =
@@ -1086,7 +1090,7 @@ private fun ResultRow(row: VerifyRow, modifier: Modifier = Modifier) {
         Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 StatusDot(row.verdict.dotColor)
-                Text(if (row.verdict.label == "Работает частично") "Частично" else row.verdict.label, color = row.verdict.textColor, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                Text(if (row.verdict.label == "Часть сайтов доступна") "Частично" else row.verdict.label, color = row.verdict.textColor, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Text("${row.totalOk} из ${row.total} адресов", color = Nf.TextSub, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
         }
@@ -1884,15 +1888,15 @@ private data class ResultToast(
 )
 
 private fun toastFor(rows: List<VerifyRow>): ResultToast {
-    val allWorking = rows.all { it.verdict.label == "Работает" }
-    val noneWorking = rows.all { it.totalOk == 0 }
+    val allWorking = rows.isNotEmpty() && rows.all { it.verdict.videoConfirmed }
+    val noneWorking = rows.isNotEmpty() && rows.all { it.totalOk == 0 && !it.verdict.videoConfirmed }
     return ResultToast(
         title = when {
             allWorking -> "Проверка прошла успешно"
-            noneWorking -> "Способ не работает"
+            noneWorking -> "Сайты не открылись"
             else -> "Проверка завершена"
         },
-        lines = rows.map { "${if (it.kind == NetworkKind.Wifi) "Wi-Fi" else "Мобильная"} · ${it.strategyName}: открыто ${it.totalOk} из ${it.total}" },
+        lines = rows.map { "${if (it.kind == NetworkKind.Wifi) "Wi-Fi" else "Мобильная"} · ${it.strategyName}: ${it.verdict.label}, открыто ${it.totalOk} из ${it.total}" },
         tint = when {
             allWorking -> Nf.Green
             noneWorking -> Nf.Red

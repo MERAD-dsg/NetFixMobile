@@ -44,4 +44,19 @@ class HelpBestStrategyTest {
         val dead = RankedConfig("-d7 -a1", 0, 6, 0, 7, -1)
         assertNull(HelpActions.pickBest(listOf(current, dead), current.strategy, forDiscord = false))
     }
+
+    @Test
+    fun youtubeHelpPrefersVerifiedVideoOverHostCounts() {
+        val hostOnly = RankedConfig("-r1", 6, 6, 7, 7, 50, false)
+        val video = RankedConfig("-s1", 4, 6, 2, 7, 900, true)
+        assertEquals(video, HelpActions.pickBest(listOf(current, hostOnly, video), current.strategy, forDiscord = false))
+        assertEquals(video, HelpActions.pickBest(listOf(hostOnly, video), hostOnly.strategy, forDiscord = false))
+        assertNull(HelpActions.pickBest(listOf(video, hostOnly), video.strategy, forDiscord = false, allowEqual = true))
+    }
+
+    @Test
+    fun discordHelpStillPrioritizesDiscordHosts() {
+        val video = RankedConfig("-s1", 4, 6, 2, 7, 900, true)
+        assertEquals(discordStar, HelpActions.pickBest(listOf(current, video, discordStar), current.strategy, forDiscord = true))
+    }
 }

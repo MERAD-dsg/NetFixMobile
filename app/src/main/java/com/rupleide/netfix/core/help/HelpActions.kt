@@ -326,7 +326,14 @@ object HelpActions {
         val currentKey = current?.let(StrategyTester::normalizeStrategy)
         val excluded = exclude.map(StrategyTester::normalizeStrategy).toSet()
         val score: (StrategyTestManager.RankedConfig) -> Int = {
-            if (forDiscord) it.discordOk * 100 + it.youtubeOk else it.youtubeOk * 100 + it.discordOk
+            if (forDiscord) {
+                it.discordOk * 100 + it.youtubeOk
+            } else {
+                // A loaded video chunk is stronger evidence than opening
+                // additional YouTube pages, including when comparing against
+                // the currently selected strategy.
+                (if (it.videoLoaded == true) 100_000 else 0) + it.youtubeOk * 100 + it.discordOk
+            }
         }
         val currentScore = results.firstOrNull { StrategyTester.normalizeStrategy(it.strategy) == currentKey }?.let(score) ?: -1
         val best = results
@@ -346,7 +353,7 @@ object HelpActions {
         val currentSpeed = HelpMeasure.videoSpeedCurrent(app)?.takeIf { it.loaded }?.speedKbps ?: 0L
         val candidates = results
             .filter { it.youtubeOk > 0 && StrategyTester.normalizeStrategy(it.strategy) != originalKey }
-            .sortedByDescending { it.youtubeOk }
+            .sortedWith(compareByDescending<StrategyTestManager.RankedConfig> { it.videoLoaded == true }.thenByDescending { it.youtubeOk })
             .take(VIDEO_CANDIDATES)
         val wasRunning = StrategyTester(app).stopRunningVpnForTests()
         var best: Pair<String, Long>? = null

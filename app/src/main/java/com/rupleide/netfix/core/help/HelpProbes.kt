@@ -17,6 +17,7 @@ import com.rupleide.netfix.core.dpibypass.ProxyPortResolver
 import com.rupleide.netfix.core.dpibypass.ServiceManager
 import com.rupleide.netfix.core.dpibypass.StrategyTestManager
 import com.rupleide.netfix.core.dpibypass.StrategyTester
+import com.rupleide.netfix.core.dpibypass.VerificationRanking
 import com.rupleide.netfix.core.dpibypass.appListMode
 import com.rupleide.netfix.core.dpibypass.currentNetworkKind
 import com.rupleide.netfix.core.dpibypass.getPreferences
@@ -137,21 +138,26 @@ object HelpProbes {
     fun nextWorkingStrategy(context: Context): String? {
         val kind = context.currentNetworkKind() ?: return null
         val current = currentStrategy(context)?.let(StrategyTester::normalizeStrategy)
-        val verified = StrategyTestManager.verifyResults[kind].orEmpty()
-            .filter { it.isWorking && StrategyTester.normalizeStrategy(it.strategy) != current }
-            .sortedWith(compareByDescending<StrategyTestManager.RankedConfig> { it.totalOk }.thenBy { if (it.averageMs < 0) Long.MAX_VALUE else it.averageMs })
-            .firstOrNull()?.strategy
+        val verified = VerificationRanking.sorted(
+            StrategyTestManager.verifyResults[kind].orEmpty()
+                .filter { it.isWorking && StrategyTester.normalizeStrategy(it.strategy) != current }
+        ).firstOrNull()?.strategy
         return verified ?: StrategyTestManager.configChoices(kind).firstOrNull { StrategyTester.normalizeStrategy(it) != current }
     }
 
     fun fasterStrategy(context: Context): String? {
         val kind = context.currentNetworkKind() ?: return null
         val current = currentStrategy(context)
-        val currentMs = StrategyTestManager.resultFor(kind, current)?.averageMs ?: return null
+        val currentResult = StrategyTestManager.resultFor(kind, current) ?: return null
+        val currentMs = currentResult.averageMs
         if (currentMs <= 0) return null
         val currentKey = current?.let(StrategyTester::normalizeStrategy)
         return StrategyTestManager.verifyResults[kind].orEmpty()
-            .filter { it.isWorking && it.averageMs in 1 until (currentMs * FASTER_RATIO).toLong() && StrategyTester.normalizeStrategy(it.strategy) != currentKey }
+            .filter {
+                it.isWorking && it.averageMs in 1 until (currentMs * FASTER_RATIO).toLong() &&
+                    StrategyTester.normalizeStrategy(it.strategy) != currentKey &&
+                    (currentResult.videoLoaded != true || it.videoLoaded == true)
+            }
             .minByOrNull { it.averageMs }
             ?.strategy
     }

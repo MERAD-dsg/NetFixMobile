@@ -1821,7 +1821,7 @@ private fun resultIsPartial(context: Context): Boolean {
     val ranked = StrategyTestManager.verifyResults[kind]
         ?.firstOrNull { StrategyTester.normalizeStrategy(it.strategy) == key }
         ?: return false
-    return ranked.total > 0 && !ranked.isWorking
+    return ranked.total > 0 && (ranked.videoLoaded == false || !ranked.isWorking)
 }
 
 private fun verifiedLine(context: Context, strategy: String?): String? {
@@ -1833,7 +1833,12 @@ private fun verifiedLine(context: Context, strategy: String?): String? {
         ?: return null
     if (ranked.total <= 0) return null
     val base = "Открыто ${ranked.totalOk} из ${ranked.total}"
-    return if (ranked.averageMs > 0) "$base · ${ranked.averageMs} мс" else base
+    val video = when (ranked.videoLoaded) {
+        true -> " · видео загружено"
+        false -> " · видео не подтверждено"
+        null -> ""
+    }
+    return (if (ranked.averageMs > 0) "$base · ${ranked.averageMs} мс" else base) + video
 }
 
 private fun strategyTitle(context: Context, name: String): String {
@@ -1847,8 +1852,8 @@ private fun StrategyTestingExistingStep(onNavigate: (OnboardingStep) -> Unit) {
     val ready = rememberEnterGate()
     val focusRequester = rememberPrimaryFocus(ready)
     val title = strategyTitle(context, StrategyTestManager.getActiveStrategyName(context))
-    val sub = verifiedLine(context, StrategyTestManager.appliedStrategy)?.let { "Работает · ${it.replaceFirstChar { c -> c.lowercase() }}" }
-        ?: describeStatus(appliedResultStatus(), "Работает")
+    val sub = verifiedLine(context, StrategyTestManager.appliedStrategy)?.let { "Проверено · ${it.replaceFirstChar { c -> c.lowercase() }}" }
+        ?: describeStatus(appliedResultStatus(), "Проверено")
 
     OnbPage(
         illustration = {
@@ -2421,7 +2426,7 @@ private fun StrategyTestingResultStep(onNavigate: (OnboardingStep) -> Unit) {
                 },
                 title = if (partial) "Работает не полностью" else "Способ найден",
                 description = if (partial) {
-                    "Часть адресов не открылась. Проверить заново можно в настройках."
+                    "Не все адреса открылись или видео не удалось подтвердить. Проверить заново можно в настройках."
                 } else {
                     "Подобрали лучший для вашей сети. Сменить можно в настройках."
                 },
