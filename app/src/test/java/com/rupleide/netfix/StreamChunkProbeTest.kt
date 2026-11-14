@@ -59,7 +59,33 @@ class StreamChunkProbeTest {
         val working = StreamProbeResult(true, 900, 30, StreamChunkProbe.CHUNK_BYTES, null)
         assertEquals(3000.0, StreamChunkProbe.score(30, broken), 0.0001)
         assertTrue(StreamChunkProbe.score(30, working) > StreamChunkProbe.score(30, broken))
+        // The numeric host score alone used to prefer the broken stream. The
+        // actual selection must always prefer a verified video download.
         assertTrue(StreamChunkProbe.score(31, broken) > StreamChunkProbe.score(30, working))
+        assertTrue(StreamChunkProbe.isBetterCandidate(30, working, 31, broken, true))
+        assertTrue(!StreamChunkProbe.isBetterCandidate(31, broken, 30, working, true))
+    }
+
+    @Test
+    fun hostScoringRemainsAvailableWhenVideoProbeIsDisabledOrUnavailable() {
+        val failed = StreamProbeResult.failed("player unavailable")
+        val working = StreamProbeResult(true, 900, 30, StreamChunkProbe.CHUNK_BYTES, null)
+        assertTrue(StreamChunkProbe.isBetterCandidate(31, failed, 30, working, false))
+        assertTrue(StreamChunkProbe.isBetterCandidate(31, failed, 30, failed, true))
+        assertTrue(!StreamChunkProbe.isBetterCandidate(0, working, 30, failed, true))
+        assertTrue(StreamChunkProbe.isBetterCandidate(1, null, 0, null, true))
+    }
+
+    @Test
+    fun progressiveVideoWithoutLengthCanBeProbed() {
+        val response = """{"playabilityStatus":{"status":"OK"},"streamingData":{"formats":[{"mimeType":"video/mp4","bitrate":100,"url":"https://a/v"}]}}"""
+        assertEquals("https://a/v", StreamChunkProbe.pickChunkUrl(response))
+    }
+
+    @Test
+    fun unknownBitrateVideoIsNotDiscarded() {
+        val response = """{"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[{"mimeType":"video/mp4","contentLength":"500000","url":"https://a/v"}]}}"""
+        assertEquals("https://a/v", StreamChunkProbe.pickChunkUrl(response))
     }
 
     @Test

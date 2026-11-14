@@ -6,9 +6,31 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+// The published 1.0.5 source tree is incomplete. When its helper sources or
+// native patches are absent, reuse only those exact components from the
+// checksum-pinned upstream APK rather than silently disabling features.
+val completeUpstreamSources = listOf(
+    "src/main/java/com/rupleide/netfix/core/dpibypass/CloudflareUnfreeze.kt",
+    "src/main/java/com/rupleide/netfix/core/dpibypass/SecureDnsRelay.kt",
+    "src/main/cpp/patches/byedpi-cloudflare-redirect.patch",
+    "src/main/cpp/patches/byedpi-dns-redirect.patch",
+    "src/main/cpp/patches/byedpi-quic-giveup.patch"
+).all { file(it).isFile }
+val usePublishedBaseline = providers.gradleProperty("netfix.usePublishedBaseline")
+    .map { it.toBoolean() }.getOrElse(!completeUpstreamSources)
+val baselineDir = layout.buildDirectory.dir("upstream-baseline")
+val preparePublishedBaseline by tasks.registering(Exec::class) {
+    group = "build setup"
+    description = "Recover missing upstream 1.0.5 components from the verified public APK"
+    val script = rootProject.file("scripts/prepare-upstream-baseline.sh")
+    inputs.file(script)
+    outputs.dir(baselineDir)
+    commandLine("bash", script.absolutePath, baselineDir.get().asFile.absolutePath)
+}
+
 android {
     namespace = "com.rupleide.netfix"
-    ndkVersion = "30.0.14904198"
+    if (!usePublishedBaseline) ndkVersion = "30.0.14904198"
     compileSdk {
         version = release(36)
     }
@@ -56,20 +78,27 @@ android {
         compose = true
         buildConfig = true
     }
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
+    if (!usePublishedBaseline) {
+        externalNativeBuild {
+            cmake {
+                path = file("src/main/cpp/CMakeLists.txt")
+                version = "3.22.1"
+            }
         }
     }
     sourceSets {
         getByName("main") {
-            jniLibs.setSrcDirs(listOf("src/main/jniLibs", "src/main/jniLibsRust"))
+            val dirs = mutableListOf<Any>("src/main/jniLibs", "src/main/jniLibsRust")
+            if (usePublishedBaseline) dirs.add(baselineDir.map { it.dir("jniLibs") })
+            jniLibs.setSrcDirs(dirs)
         }
     }
 }
 
 dependencies {
+    if (usePublishedBaseline) {
+        implementation(files(baselineDir.map { it.file("libs/upstream-helpers.jar") }).builtBy(preparePublishedBaseline))
+    }
     implementation("net.java.dev.jna:jna:5.17.0@aar")
     implementation("com.google.zxing:core:3.5.3")
     implementation("androidx.startup:startup-runtime:1.2.0")
@@ -163,8 +192,12 @@ tasks.register("applyByedpiPatch") {
 }
 
 tasks.named("preBuild") {
-    dependsOn("runNdkBuild")
-    dependsOn("applyByedpiPatch")
+    if (usePublishedBaseline) {
+        dependsOn(preparePublishedBaseline)
+    } else {
+        dependsOn("runNdkBuild")
+        dependsOn("applyByedpiPatch")
+    }
 }
 
 base {

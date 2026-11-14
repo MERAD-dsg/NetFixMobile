@@ -14,14 +14,17 @@ object VideoFastFail {
         return argsFor(strategyArgs, isMobileNetwork(context))
     }
 
-    const val QUIC_GIVEUP_MS = "400"
-    const val VIDEO_HOST_SUFFIX = "googlevideo.com"
-
     fun argsFor(strategyArgs: Array<String>, mobile: Boolean): List<String> {
-        val quicArgs = if (strategyArgs.any { it.startsWith("--quic-giveup") }) emptyList() else listOf("--quic-giveup", QUIC_GIVEUP_MS)
-        if (strategyArgs.any { it == "-T" || it.startsWith("--timeout") || (it.startsWith("-T") && it.length > 2) }) return quicArgs
+        if (strategyArgs.any { it == "-T" || it.startsWith("--timeout=") || it == "--timeout" || (it.startsWith("-T") && it.length > 2) }) {
+            return emptyList()
+        }
         val seconds = if (mobile) MOBILE_ACK_TIMEOUT_SECONDS else WIFI_ACK_TIMEOUT_SECONDS
-        return listOf("-T", "$seconds:0:3:1", "--keep-timeout-suffix", VIDEO_HOST_SUFFIX) + quicArgs
+        // Limit the timeout to connection setup: ByeDPI clears it after the first
+        // response. Keeping TCP_USER_TIMEOUT for the entire googlevideo stream can
+        // terminate an otherwise healthy download after a brief loss of ACKs.
+        // Do not inject a synthetic QUIC version-negotiation response either; some
+        // players treat it as a failed connection rather than falling back to TCP.
+        return listOf("-T", "$seconds:0:3:1")
     }
 
     private fun isMobileNetwork(context: Context): Boolean = runCatching {

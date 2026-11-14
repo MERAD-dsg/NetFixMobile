@@ -63,6 +63,8 @@ class ByeDpiVpnService : LifecycleVpnService() {
         private const val CLOUDFLARE_CHECK_DELAY_MS = 3_000L
         private const val CLOUDFLARE_PERIODIC_CHECK_MS = 45L * 60 * 1000
         private const val NOTIFICATION_CHANNEL_ID: String = NETFIX_NOTIFICATION_CHANNEL_ID
+        private const val VPN_MTU = 1500
+        @Volatile
         private var status: ServiceStatus = ServiceStatus.Disconnected
 
         val isConnected: Boolean
@@ -88,44 +90,41 @@ class ByeDpiVpnService : LifecycleVpnService() {
             R.string.vpn_channel_name
         )
         val connectivityManager = getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
-        val request = android.net.NetworkRequest.Builder()
-            .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .build()
         val callback = object : android.net.ConnectivityManager.NetworkCallback() {
-            private var lastNetwork: android.net.Network? = null
+            private val networks = DefaultNetworkTracker<android.net.Network>()
+
             override fun onAvailable(network: android.net.Network) {
                 super.onAvailable(network)
-                if (lastNetwork != null && lastNetwork != network) {
-                    if (isRunning) {
-                        lifecycleScope.launch {
-                            mutex.withLock {
-                                try {
-                                    switchStrategyForCurrentNetwork()
-                                    stopProxy()
-                                    stopTun2Socks()
-                                    startProxy()
-                                    startTun2Socks()
-                                } catch (e: Exception) {
-                                    Log.e(TAG, "Watchdog reconnect failed", e)
-                                }
-                            }
-                            checkCloudflareFreeze()
+                if (!networks.onAvailable(network) || !isRunning) return
+                lifecycleScope.launch {
+                    var restarted = false
+                    mutex.withLock {
+                        // A later default-network event can supersede a queued restart.
+                        if (!networks.isCurrent(network) || !isRunning) return@withLock
+                        try {
+                            switchStrategyForCurrentNetwork()
+                            stopProxy()
+                            stopTun2Socks()
+                            startProxy()
+                            startTun2Socks()
+                            restarted = true
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Watchdog reconnect failed", e)
                         }
                     }
-                }
-                lastNetwork = network
-            }
-            override fun onLost(network: android.net.Network) {
-                super.onLost(network)
-                if (network == lastNetwork) {
-                    lastNetwork = null
+                    if (restarted) checkCloudflareFreeze()
                 }
             }
         }
         networkCallback = callback
         try {
-            connectivityManager.registerNetworkCallback(request, callback)
-        } catch (_: Exception) {}
+            // The previous request watched *all* Internet networks, including
+            // standby mobile and the VPN itself. Their appearance could repeatedly
+            // tear down long-lived video streams without a real network switch.
+            connectivityManager.registerDefaultNetworkCallback(callback)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not watch the default network", e)
+        }
     }
 
     override fun onDestroy() {
@@ -252,6 +251,12 @@ class ByeDpiVpnService : LifecycleVpnService() {
             checkCloudflareFreeze()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start VPN", e)
+            // Startup can fail after the proxy has started but before the VPN is
+            // marked connected. Tear down those partial resources first.
+            mutex.withLock {
+                stopTun2Socks()
+                stopProxy()
+            }
             updateStatus(ServiceStatus.Failed)
             stop()
         }
@@ -422,7 +427,9 @@ class ByeDpiVpnService : LifecycleVpnService() {
     private suspend fun stopProxy() {
         Log.i(TAG, "Stopping proxy")
 
-        if (status == ServiceStatus.Disconnected) {
+        if (proxyJob == null) {
+            SecureDnsRelay.stop()
+            activeProxyPort = null
             Log.w(TAG, "Proxy already disconnected")
             return
         }
@@ -443,6 +450,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
             }
 
             proxyJob = null
+            activeProxyPort = null
         } catch (e: Exception) {
             Log.e(TAG, "Failed to close proxyJob", e)
         }
@@ -467,7 +475,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
 
         val tun2socksConfig = buildString {
             appendLine("tunnel:")
-            appendLine("  mtu: 8500")
+            appendLine("  mtu: $VPN_MTU")
 
             appendLine("misc:")
             appendLine("  task-stack-size: 81920")
@@ -612,7 +620,8 @@ class ByeDpiVpnService : LifecycleVpnService() {
             )
         )
 
-        builder.addAddress("10.10.10.10", 32)
+        builder.setMtu(VPN_MTU)
+            .addAddress("10.10.10.10", 32)
             .addRoute("0.0.0.0", 0)
 
         if (ipv6) {
@@ -630,13 +639,20 @@ class ByeDpiVpnService : LifecycleVpnService() {
 
         when (preferences.appListMode()) {
             AppListMode.SelectedAppsOnly -> {
+                var addedApps = 0
                 for (packageName in CompatibilityManager.vpnAppsFor(preferences, preferences.selectedAppsWithDefaults())) {
+                    // The proxy's own sockets must stay outside the VPN to avoid a
+                    // routing loop, even if NetFix was accidentally selected.
+                    if (packageName == applicationContext.packageName) continue
                     try {
                         builder.addAllowedApplication(packageName)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to whitelist app $packageName", e)
+                        addedApps++
+                    } catch (e: PackageManager.NameNotFoundException) {
+                        Log.d(TAG, "Selected app is not installed: $packageName")
                     }
                 }
+                // No allowed apps means Android routes ALL apps, including NetFix.
+                if (addedApps == 0) throw IllegalStateException("No installed apps selected for the VPN")
             }
             AppListMode.AllTraffic -> {
                 builder.addDisallowedApplication(applicationContext.packageName)

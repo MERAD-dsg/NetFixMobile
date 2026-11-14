@@ -11,28 +11,41 @@ import org.junit.Test
 class VideoFastFailTest {
 
     @Test
-    fun wifiGetsShortAckTimeout() {
+    fun wifiTimeoutOnlyAppliesDuringConnectionSetup() {
         assertEquals(
-            listOf("-T", "1.5:0:3:1", "--keep-timeout-suffix", "googlevideo.com", "--quic-giveup", "400"),
+            listOf("-T", "1.5:0:3:1"),
             VideoFastFail.argsFor(arrayOf("ciadpi", "-r5+s", "-s25+s"), mobile = false)
         )
     }
 
     @Test
-    fun mobileGetsLongerAckTimeout() {
+    fun mobileGetsLongerSetupTimeout() {
         assertEquals(
-            listOf("-T", "2.5:0:3:1", "--keep-timeout-suffix", "googlevideo.com", "--quic-giveup", "400"),
+            listOf("-T", "2.5:0:3:1"),
             VideoFastFail.argsFor(arrayOf("ciadpi", "-r5+s"), mobile = true)
         )
     }
 
     @Test
     fun ownTimeoutInStrategyIsKept() {
-        val quicOnly = listOf("--quic-giveup", "400")
-        assertEquals(quicOnly, VideoFastFail.argsFor(arrayOf("ciadpi", "-T", "3", "-r5+s"), mobile = false))
-        assertEquals(quicOnly, VideoFastFail.argsFor(arrayOf("ciadpi", "--timeout=3"), mobile = false))
-        assertEquals(quicOnly, VideoFastFail.argsFor(arrayOf("ciadpi", "-T3"), mobile = false))
-        assertEquals(emptyList<String>(), VideoFastFail.argsFor(arrayOf("ciadpi", "-T3", "--quic-giveup", "900"), mobile = false))
+        for (args in listOf(
+            arrayOf("ciadpi", "-T", "3", "-r5+s"),
+            arrayOf("ciadpi", "--timeout", "3"),
+            arrayOf("ciadpi", "--timeout=3"),
+            arrayOf("ciadpi", "-T3"),
+            arrayOf("ciadpi", "-T3", "--quic-giveup", "900")
+        )) {
+            assertEquals(emptyList<String>(), VideoFastFail.argsFor(args, mobile = false))
+        }
+    }
+
+    @Test
+    fun neverAddsPersistentVideoTimeoutOrForgedQuicReply() {
+        val args = VideoFastFail.argsFor(arrayOf("ciadpi", "-a1"), mobile = false)
+        assertFalse("--keep-timeout-suffix" in args)
+        assertFalse("--quic-giveup" in args)
+        // A user-specified QUIC option is left alone; it is not duplicated.
+        assertEquals(listOf("-T", "1.5:0:3:1"), VideoFastFail.argsFor(arrayOf("ciadpi", "--quic-giveup=900"), mobile = false))
     }
 
     @Test

@@ -48,21 +48,47 @@ object StreamChunkProbe {
         val root = JSONObject(playerResponse)
         val status = root.optJSONObject("playabilityStatus")?.optString("status")
         if (status != "OK") return null
-        val formats = root.optJSONObject("streamingData")?.optJSONArray("adaptiveFormats") ?: return null
+        val streamingData = root.optJSONObject("streamingData") ?: return null
+        val formatLists = listOfNotNull(
+            streamingData.optJSONArray("adaptiveFormats"),
+            streamingData.optJSONArray("formats")
+        )
         var bestUrl: String? = null
         var bestBitrate = Long.MAX_VALUE
-        for (i in 0 until formats.length()) {
+        for (formats in formatLists) for (i in 0 until formats.length()) {
             val format = formats.optJSONObject(i) ?: continue
             val url = format.optString("url")
-            val length = format.optString("contentLength").toLongOrNull() ?: 0L
+            val length = format.optString("contentLength").toLongOrNull()
             val bitrate = format.optLong("bitrate", Long.MAX_VALUE)
             val isVideo = format.optString("mimeType").startsWith("video/")
-            if (isVideo && url.isNotEmpty() && length >= CHUNK_BYTES && bitrate < bestBitrate) {
+            // Some progressive formats omit contentLength. Try them as well; the
+            // download still has to return a complete chunk to count as a success.
+            if (isVideo && url.isNotEmpty() && (length == null || length >= CHUNK_BYTES) &&
+                (bestUrl == null || bitrate < bestBitrate)) {
                 bestUrl = url
                 bestBitrate = bitrate
             }
         }
         return bestUrl
+    }
+
+    /** A proven video stream must beat any host-only success, even if slower. */
+    fun isBetterCandidate(
+        reachableHosts: Int,
+        stream: StreamProbeResult?,
+        bestReachableHosts: Int,
+        bestStream: StreamProbeResult?,
+        streamProbeEnabled: Boolean
+    ): Boolean {
+        if (reachableHosts <= 0) return false
+        if (bestReachableHosts <= 0) return true
+        if (streamProbeEnabled) {
+            val loaded = stream?.loaded == true
+            val bestLoaded = bestStream?.loaded == true
+            if (loaded != bestLoaded) return loaded
+            return score(reachableHosts, stream) > score(bestReachableHosts, bestStream)
+        }
+        return reachableHosts > bestReachableHosts
     }
 
     fun score(reachableHosts: Int, stream: StreamProbeResult?): Double {

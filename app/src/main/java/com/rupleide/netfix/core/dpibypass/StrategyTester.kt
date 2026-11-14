@@ -349,7 +349,8 @@ class StrategyTester(private val context: Context) {
         }
 
         var bestStrategy: String? = null
-        var bestScore = 0.0
+        var bestPassedSites = 0
+        var bestStream: StreamProbeResult? = null
         val streamProbeOn = CompatibilityManager.streamProbeEnabled(context.getPreferences())
         if (finalistIndices.isNotEmpty()) onFinalPhase(finalistIndices.size)
         for (index in finalistIndices) {
@@ -366,9 +367,9 @@ class StrategyTester(private val context: Context) {
             stream?.let { Log.i("StrategyTester", "Видеопоток стратегии №${index + 1}: ${describeStream(it)}") }
             val shownStatus = if (passedSites > 0) statusText else "${quickPassedSites[index]}/${quickSites.size}"
             onProgress(index, strategy, shownStatus, true)
-            val score = if (streamProbeOn) StreamChunkProbe.score(passedSites, stream) else passedSites.toDouble()
-            if (passedSites > 0 && score > bestScore) {
-                bestScore = score
+            if (StreamChunkProbe.isBetterCandidate(passedSites, stream, bestPassedSites, bestStream, streamProbeOn)) {
+                bestPassedSites = passedSites
+                bestStream = stream
                 bestStrategy = strategy
             }
         }
@@ -398,7 +399,10 @@ class StrategyTester(private val context: Context) {
         diagnosticStrategy = cleanCmd
         val prefix = "--ip 127.0.0.1 --port $testPort "
         val splitArgs = shellSplit("$prefix$cleanCmd").filter { it !in setOf("--help", "--version", "-h", "-v") }
-        val args = (listOf("ciadpi") + splitArgs + CloudflareUnfreeze.extraArgs(context)).toTypedArray()
+        val strategyArgs = (listOf("ciadpi") + splitArgs).toTypedArray()
+        // Test with the same video-related options that are added when the VPN
+        // or proxy is actually started, not a subtly different configuration.
+        val args = strategyArgs + CloudflareUnfreeze.extraArgs(context) + VideoFastFail.extraArgs(context, strategyArgs)
 
         val proxy = ByeDpiProxy()
         var startCode: Int? = null
