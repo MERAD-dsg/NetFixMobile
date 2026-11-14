@@ -1,0 +1,26 @@
+name: Android debug build
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  inspect-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Retrieve published baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          curl -fLsS 'https://github.com/rupleide/NetFixMobile/releases/download/v1.0.5/NetFix-Mobile-v1.0.5-release.apk' -o /tmp/upstream.apk
+          python3 - <<'PY'
+          import base64, json
+          with open('/tmp/upstream.apk', 'rb') as apk, open('/tmp/blob.json', 'w') as out:
+              json.dump({'content': base64.b64encode(apk.read()).decode('ascii'), 'encoding': 'base64'}, out)
+          PY
+          sha=$(gh api -X POST "repos/$REPOSITORY/git/blobs" --input /tmp/blob.json --jq '.sha')
+          echo "::notice title=Baseline APK blob::$sha"
