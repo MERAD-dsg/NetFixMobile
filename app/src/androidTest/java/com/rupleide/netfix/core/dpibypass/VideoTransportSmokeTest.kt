@@ -32,6 +32,15 @@ import kotlin.concurrent.thread
 class VideoTransportSmokeTest {
     private val loopback = InetAddress.getByName("127.0.0.1")
 
+    private fun shell(command: String): String =
+        ParcelFileDescriptor.AutoCloseInputStream(
+            InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command)
+        ).bufferedReader().use { it.readText() }
+
+    private fun grantNotificationPermission(packageName: String) {
+        if (Build.VERSION.SDK_INT >= 33) shell("pm grant $packageName android.permission.POST_NOTIFICATIONS")
+    }
+
     private fun waitForProxy(port: Int) {
         val deadline = SystemClock.elapsedRealtime() + 5_000
         while (SystemClock.elapsedRealtime() < deadline) {
@@ -98,6 +107,7 @@ class VideoTransportSmokeTest {
     @Test
     fun appLaunchesAndTunnelLibraryLoads() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
+        grantNotificationPermission(context.packageName)
         assertEquals(BuildConfig.APPLICATION_ID, context.packageName)
         if (BuildConfig.APPLICATION_ID.endsWith(".debug")) {
             val label = context.packageManager.getApplicationLabel(context.applicationInfo).toString()
@@ -112,11 +122,7 @@ class VideoTransportSmokeTest {
 
     @Test
     fun vpnStaysUpAndDoesNotRecreateItsOwnTunnel() {
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val context = instrumentation.targetContext
-        fun shell(command: String): String =
-            ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation.executeShellCommand(command))
-                .bufferedReader().use { it.readText() }
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
         fun waitUntil(message: String, timeoutMs: Long = 15_000, condition: () -> Boolean) {
             val deadline = SystemClock.elapsedRealtime() + timeoutMs
             while (SystemClock.elapsedRealtime() < deadline) {
@@ -127,7 +133,7 @@ class VideoTransportSmokeTest {
         }
 
         shell("appops set ${context.packageName} ACTIVATE_VPN allow")
-        if (Build.VERSION.SDK_INT >= 33) shell("pm grant ${context.packageName} android.permission.POST_NOTIFICATIONS")
+        grantNotificationPermission(context.packageName)
         assertNull("VPN consent was not granted by the emulator", VpnService.prepare(context))
         val prefs = context.getPreferences()
         val port = ServerSocket(0, 1, loopback).use { it.localPort }
